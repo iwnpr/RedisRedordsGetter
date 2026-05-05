@@ -81,8 +81,8 @@ static bool HasType2Answer(string xml)
     try
     {
         var document = XDocument.Parse(xml);
-        var typeAttribute = document
-            .DescendantsAndSelf()
+        var typeAttribute = document.Root
+            ?.DescendantsAndSelf()
             .Attributes("ТипОтвета")
             .FirstOrDefault()?.Value;
 
