@@ -31,33 +31,43 @@ app.MapPost("/redis/extract-type2-guids", async ([FromServices] IConfiguration c
     await using var connection = await ConnectionMultiplexer.ConnectAsync(options);
     var database = connection.GetDatabase();
 
-    var endpoint = connection.GetEndPoints().First();
-    var server = connection.GetServer(endpoint);
-
     var extractedRecords = new List<(string Guid, string TaskResultXml)>();
 
-    await foreach (var key in server.KeysAsync(database.Database, pattern: "QBCH:dlrequest:*"))
+    foreach (var endpoint in connection.GetEndPoints())
     {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        if (await database.KeyTypeAsync(key) != RedisType.Hash)
+        var server = connection.GetServer(endpoint);
+        if (!server.IsConnected)
         {
             continue;
         }
 
-        var guid = ExtractGuidFromKey(key!);
-        if (guid is null)
+        await foreach (var key in server.KeysAsync(database.Database, pattern: "QBCH:dlrequest:*", pageSize: 5_000))
         {
-            continue;
-        }
+            cancellationToken.ThrowIfCancellationRequested();
 
-        var taskResultXml = await database.HashGetAsync(key, "task_result_xml");
-        if (taskResultXml.IsNullOrWhiteSpace)
-        {
-            continue;
-        }
+            var guid = ExtractGuidFromKey(key!);
+            if (guid is null)
+            {
+                continue;
+            }
 
-        extractedRecords.Add((guid, taskResultXml.ToString()));
+            RedisValue taskResultXml;
+            try
+            {
+                taskResultXml = await database.HashGetAsync(key, "task_result_xml");
+            }
+            catch (RedisServerException ex) when (ex.Message.StartsWith("WRONGTYPE", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (taskResultXml.IsNullOrWhiteSpace)
+            {
+                continue;
+            }
+
+            extractedRecords.Add((guid, taskResultXml.ToString()));
+        }
     }
 
     var filteredGuids = extractedRecords
