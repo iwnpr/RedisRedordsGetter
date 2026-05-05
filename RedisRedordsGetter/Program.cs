@@ -34,42 +34,46 @@ app.MapPost("/redis/extract-type2-guids", async ([FromServices] IConfiguration c
     var endpoint = connection.GetEndPoints().First();
     var server = connection.GetServer(endpoint);
 
-    var filteredGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var extractedRecords = new List<(string Guid, string TaskResultXml)>();
 
     await foreach (var key in server.KeysAsync(database.Database, pattern: "QBCH:dlrequest:*"))
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var hashEntries = await database.HashGetAllAsync(key);
-        if (hashEntries.Length == 0)
-        {
-            continue;
-        }
-
-        var entryMap = hashEntries.ToDictionary(x => x.Name.ToString(), x => x.Value.ToString(), StringComparer.OrdinalIgnoreCase);
-        if (!entryMap.TryGetValue("task_result_xml", out var taskResultXml) || string.IsNullOrWhiteSpace(taskResultXml))
-        {
-            continue;
-        }
-
-        if (!HasType2Answer(taskResultXml))
+        if (await database.KeyTypeAsync(key) != RedisType.Hash)
         {
             continue;
         }
 
         var guid = ExtractGuidFromKey(key!);
-        if (guid is not null)
+        if (guid is null)
         {
-            filteredGuids.Add(guid);
+            continue;
         }
+
+        var taskResultXml = await database.HashGetAsync(key, "task_result_xml");
+        if (taskResultXml.IsNullOrWhiteSpace)
+        {
+            continue;
+        }
+
+        extractedRecords.Add((guid, taskResultXml.ToString()));
     }
 
+    var filteredGuids = extractedRecords
+        .Where(record => HasType2Answer(record.TaskResultXml))
+        .Select(record => record.Guid)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(guid => guid)
+        .ToArray();
+
     var outputPath = Path.Combine(AppContext.BaseDirectory, "type2_guids.txt");
-    await File.WriteAllLinesAsync(outputPath, filteredGuids.OrderBy(x => x), cancellationToken);
+    await File.WriteAllLinesAsync(outputPath, filteredGuids, cancellationToken);
 
     return Results.Ok(new
     {
-        TotalGuids = filteredGuids.Count,
+        TotalGuids = filteredGuids.Length,
+        ExtractedRecords = extractedRecords.Count,
         OutputFile = outputPath
     });
 });
